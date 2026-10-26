@@ -1,0 +1,77 @@
+name: Analyze Flinity app
+
+on:
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Download app and apktool
+        run: |
+          wget -q https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar -O apktool.jar
+          wget -q https://github.com/dozapsixoza1/silver-eureka-/releases/download/latest/Flinity_flinityRelease29_12_2025.zip -O flinity.zip
+          ls -l flinity.zip
+
+      - name: Build apk from unpacked folder and decode
+        run: |
+          mkdir src
+          unzip -q flinity.zip -d src
+          D=$(dirname "$(find src -name AndroidManifest.xml | head -n1)")
+          echo "app dir: $D"
+          (cd "$D" && zip -qr "$GITHUB_WORKSPACE/app.apk" . -x "META-INF/*")
+          ls -l app.apk
+          java -jar apktool.jar d -f app.apk -o out > decode.log 2>&1 || true
+          tail -n 5 decode.log
+          ls out | head -20
+
+      - name: Analyze
+        run: |
+          {
+          echo "=== apktool.yml ==="
+          grep -nE "minSdk|targetSdk|versionName|versionCode" out/apktool.yml
+          echo
+          echo "=== manifest: launcher activity ==="
+          grep -n -B4 -A4 "LAUNCHER" out/AndroidManifest.xml | head -60
+          echo
+          echo "=== GTASA classes ==="
+          find out -name 'GTASA*.smali'
+          echo
+          echo "=== callers of setClient* ==="
+          grep -rn "invoke.*setClient" out/smali* | head -40
+          echo
+          for f in $(grep -rl "invoke.*setClientIp" out/smali* | head -3); do
+            echo "--- context in $f"
+            grep -n -B40 -A6 "invoke.*setClientIp" "$f" | head -160
+          done
+          echo
+          echo "=== native methods ==="
+          grep -rn "^\.method.* native " out/smali*/com/flin* | head -40
+          echo
+          echo "=== const-strings with hosts ==="
+          grep -rn "const-string.*\(flin-rp\|flinity\|flingame\|dimkov\)" out/smali* | head -60
+          echo
+          for n in ListActivityServers IntallNickActivity MainStart LoadingApp CheckFilesActivity MainActivity SelectInstallClient; do
+            f=$(find out -name "$n.smali" | head -n1)
+            [ -z "$f" ] && continue
+            echo "--- const-strings in $n ($f)"
+            grep -h "const-string" "$f" | sed 's/.*const-string[^,]*, //' | sort -u | head -80
+          done
+          echo
+          echo "=== shared prefs keys / intents ==="
+          grep -rn "getSharedPreferences" out/smali*/com/flinity/sa/*.smali | head -20
+          } > analysis.txt 2>&1
+          wc -c analysis.txt
+          head -n 120 analysis.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: analysis
+          path: |
+            analysis.txt
+            decode.log
