@@ -1,4 +1,4 @@
-name: Build launcher from zip
+name: Build client with launcher
 
 on:
   workflow_dispatch:
@@ -14,7 +14,6 @@ jobs:
       - name: Unpack launcher zip
         run: |
           unzip -q -o flin-launcher.zip -d src_launcher
-          find src_launcher -maxdepth 2 | head -30
 
       - uses: actions/setup-java@v4
         with:
@@ -25,14 +24,108 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Build
+      - name: Build launcher classes
         run: |
           D=$(dirname "$(find src_launcher -name settings.gradle | head -n1)")
-          echo "project dir: $D"
           cd "$D"
           gradle assembleDebug --no-daemon
+          cp "$(find . -name app-debug.apk | head -n1)" "$GITHUB_WORKSPACE/launcher.apk"
+          ls -l "$GITHUB_WORKSPACE/launcher.apk"
+
+      - name: Download tools and client
+        run: |
+          wget -q https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar -O apktool.jar
+          wget -q https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar -O signer.jar
+          wget -q https://github.com/dozapsixoza1/silver-eureka-/releases/download/latest/flinrp_full.apk -O client.apk
+          ls -l client.apk
+
+      - name: Decode client and launcher
+        run: |
+          java -jar apktool.jar d -f client.apk -o out
+          java -jar apktool.jar d -f -r launcher.apk -o launcher_dec
+          echo "=== manifest head ==="
+          head -c 1500 out/AndroidManifest.xml
+          echo
+          echo "=== libs ==="
+          ls -R out/lib || true
+          echo "=== sdk ==="
+          grep -n "minSdkVersion\|targetSdkVersion" out/apktool.yml || true
+          echo "=== smali dirs ==="
+          ls -d out/smali*
+
+      - name: Embed launcher into client
+        run: |
+          python3 - << 'EOF'
+          import glob, os, re, shutil, sys
+          import xml.etree.ElementTree as ET
+
+          A = 'http://schemas.android.com/apk/res/android'
+          mpath = 'out/AndroidManifest.xml'
+          raw = open(mpath, encoding='utf-8').read()
+          for pfx, uri in re.findall(r'xmlns:(\w+)="([^"]+)"', raw):
+              ET.register_namespace(pfx, uri)
+          ET.register_namespace('android', A)
+
+          def q(n):
+              return '{%s}%s' % (A, n)
+
+          tree = ET.parse(mpath)
+          root = tree.getroot()
+          pkg = root.get('package')
+          app = root.find('application')
+
+          orig = None
+          for tag in ('activity', 'activity-alias'):
+              for act in app.findall(tag):
+                  for f in list(act.findall('intent-filter')):
+                      cats = [c.get(q('name')) for c in f.findall('category')]
+                      if 'android.intent.category.LAUNCHER' in cats:
+                          if orig is None:
+                              n = act.get(q('name'))
+                              if n.startswith('.'):
+                                  n = pkg + n
+                              elif '.' not in n:
+                                  n = pkg + '.' + n
+                              orig = n
+                          act.remove(f)
+          if not orig:
+              sys.exit('launcher activity of the client not found')
+          print('package:', pkg)
+          print('original launcher activity:', orig)
+
+          act = ET.SubElement(app, 'activity')
+          act.set(q('name'), 'com.flinrp.launcher.MainActivity')
+          act.set(q('exported'), 'true')
+          act.set(q('theme'), '@android:style/Theme.DeviceDefault.NoActionBar')
+          f = ET.SubElement(act, 'intent-filter')
+          ET.SubElement(f, 'action').set(q('name'), 'android.intent.action.MAIN')
+          ET.SubElement(f, 'category').set(q('name'), 'android.intent.category.LAUNCHER')
+
+          perms = [p.get(q('name')) for p in root.findall('uses-permission')]
+          if 'android.permission.INTERNET' not in perms:
+              p = ET.Element('uses-permission')
+              p.set(q('name'), 'android.permission.INTERNET')
+              root.insert(0, p)
+
+          tree.write(mpath, encoding='utf-8', xml_declaration=True)
+
+          os.makedirs('out/assets', exist_ok=True)
+          open('out/assets/orig_activity.txt', 'w').write(orig)
+
+          existing = [d for d in glob.glob('out/smali*') if os.path.isdir(d)]
+          n = len(existing) + 1
+          dest = 'out/smali' if n == 1 else 'out/smali_classes%d' % n
+          for d in glob.glob('launcher_dec/smali*'):
+              shutil.copytree(d, dest, dirs_exist_ok=True)
+          print('launcher smali copied to', dest)
+          EOF
+
+      - name: Build and sign
+        run: |
+          java -jar apktool.jar b out -o unsigned.apk
+          java -jar signer.jar -a unsigned.apk --allowResign -o signed
 
       - uses: actions/upload-artifact@v4
         with:
-          name: launcher-apk
-          path: src_launcher/**/build/outputs/apk/debug/*.apk
+          name: client-with-launcher
+          path: signed/*.apk
