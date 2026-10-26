@@ -1,0 +1,38 @@
+name: Build launcher from zip
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unpack launcher zip
+        run: |
+          unzip -q -o flin-launcher.zip -d src_launcher
+          find src_launcher -maxdepth 2 | head -30
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Build
+        run: |
+          D=$(dirname "$(find src_launcher -name settings.gradle | head -n1)")
+          echo "project dir: $D"
+          cd "$D"
+          gradle assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: launcher-apk
+          path: src_launcher/**/build/outputs/apk/debug/*.apk
