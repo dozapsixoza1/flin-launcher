@@ -26,7 +26,7 @@ jobs:
           sed -i 's|#include "CheckFileHash.h"|#include "checkfilehash.h"|' checkfilehash.cpp
           sed -i 's|^const auto encryptedAddress = .*|const char* encryptedAddress_plain = "195.18.27.226";|' main.cpp
           sed -i 's|encryptedAddress\.decrypt()|encryptedAddress_plain|' main.cpp
-          sed -i 's|^unsigned short port = 7777;|unsigned short port = 3146;|' main.cpp
+          sed -i 's|^unsigned short port = 7777;|unsigned short port = 4170;|' main.cpp
           cat > cheatgui.h << 'EOF'
           #pragma once
           class CCheatGUI {
