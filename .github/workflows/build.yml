@@ -17,6 +17,21 @@ jobs:
           D=$(dirname "$(find src_launcher -name settings.gradle | head -n1)")
           echo "PROJ=$PWD/$D" >> "$GITHUB_ENV"
 
+      - name: Inspect launcher source for updater integration
+        run: |
+          echo "=== Java/Kotlin sources ==="
+          find "$PROJ" -type f \( -name '*.java' -o -name '*.kt' \) -print
+          echo "=== MainActivity source ==="
+          find "$PROJ" -type f \( -name 'MainActivity.java' -o -name 'MainActivity.kt' \) -print -exec sed -n '1,260p' {} \;
+          echo "=== cache ZIP top-level paths ==="
+          curl -fL --retry 2 https://github.com/dozapsixoza1/silver-eureka-/releases/download/latest/files_full.zip -o /tmp/flin-cache.zip
+          python3 - <<'PY'
+          import zipfile
+          z=zipfile.ZipFile('/tmp/flin-cache.zip')
+          for n in z.namelist()[:80]: print(n)
+          print('entries:',len(z.namelist()))
+          PY
+
       - name: Prepare libsamp sources
         run: |
           mkdir libsamp_build
