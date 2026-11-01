@@ -1,4 +1,4 @@
-name: Build client with launcher
+name: Build single APK (client + launcher)
 
 on:
   workflow_dispatch:
@@ -11,9 +11,60 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Unpack launcher zip
+      - name: Unpack launcher project
         run: |
           unzip -q -o flin-launcher.zip -d src_launcher
+          D=$(dirname "$(find src_launcher -name settings.gradle | head -n1)")
+          echo "PROJ=$PWD/$D" >> "$GITHUB_ENV"
+
+      - name: Prepare libsamp sources
+        run: |
+          mkdir libsamp_build
+          unzip -q "$PROJ/libsamp_src.zip" -d libsamp_build
+          cd libsamp_build/src
+          mv vendor/raknet vendor/RakNet
+          sed -i 's|#include "CheckFileHash.h"|#include "checkfilehash.h"|' checkfilehash.cpp
+          sed -i 's|^const auto encryptedAddress = .*|const char* encryptedAddress_plain = "195.18.27.226";|' main.cpp
+          sed -i 's|encryptedAddress\.decrypt()|encryptedAddress_plain|' main.cpp
+          sed -i 's|^unsigned short port = 7777;|unsigned short port = 3146;|' main.cpp
+          cat > cheatgui.h << 'EOF'
+          #pragma once
+          class CCheatGUI {
+          public:
+              CCheatGUI() {}
+              void Render() {}
+              void ToggleRender() {}
+              bool GetStatus() { return false; }
+              void SetStatus(bool) {}
+          };
+          EOF
+          cat > admin-bot.h << 'EOF'
+          #pragma once
+          class CAdminBot {
+          public:
+              CAdminBot() {}
+              void Process() {}
+          };
+          EOF
+
+      - name: Fix libtinfo for old NDK
+        run: |
+          sudo ln -sf /lib/x86_64-linux-gnu/libtinfo.so.6 /lib/x86_64-linux-gnu/libtinfo.so.5
+          sudo ldconfig
+
+      - name: Install NDK r17c
+        run: |
+          wget -q https://dl.google.com/android/repository/android-ndk-r17c-linux-x86_64.zip
+          unzip -q android-ndk-r17c-linux-x86_64.zip
+          echo "NDK=$PWD/android-ndk-r17c" >> "$GITHUB_ENV"
+
+      - name: Build libsamp.so
+        run: |
+          $NDK/ndk-build -j$(nproc) \
+            NDK_PROJECT_PATH=$PWD/libsamp_build \
+            APP_BUILD_SCRIPT=$PWD/libsamp_build/src/Android.mk \
+            NDK_APPLICATION_MK=$PWD/libsamp_build/src/Application.mk
+          ls -l libsamp_build/libs/armeabi-v7a/libsamp.so
 
       - uses: actions/setup-java@v4
         with:
@@ -26,8 +77,7 @@ jobs:
 
       - name: Build launcher classes
         run: |
-          D=$(dirname "$(find src_launcher -name settings.gradle | head -n1)")
-          cd "$D"
+          cd "$PROJ"
           gradle assembleDebug --no-daemon
           cp "$(find . -name app-debug.apk | head -n1)" "$GITHUB_WORKSPACE/launcher.apk"
           ls -l "$GITHUB_WORKSPACE/launcher.apk"
@@ -43,18 +93,17 @@ jobs:
         run: |
           java -jar apktool.jar d -f client.apk -o out
           java -jar apktool.jar d -f -r launcher.apk -o launcher_dec
-          echo "=== manifest head ==="
-          head -c 1500 out/AndroidManifest.xml
-          echo
           echo "=== libs ==="
           ls -R out/lib || true
           echo "=== sdk ==="
           grep -n "minSdkVersion\|targetSdkVersion" out/apktool.yml || true
-          echo "=== smali dirs ==="
-          ls -d out/smali*
+          echo "=== who loads samp ==="
+          grep -rn --include=*.smali 'const-string [a-z0-9]*, "samp"' out/smali* | head -5 || true
 
-      - name: Embed launcher into client
+      - name: Embed launcher and new libsamp
         run: |
+          mkdir -p out/lib/armeabi-v7a
+          cp libsamp_build/libs/armeabi-v7a/libsamp.so out/lib/armeabi-v7a/libsamp.so
           python3 - << 'EOF'
           import glob, os, re, shutil, sys
           import xml.etree.ElementTree as ET
@@ -96,7 +145,10 @@ jobs:
           act = ET.SubElement(app, 'activity')
           act.set(q('name'), 'com.flinrp.launcher.MainActivity')
           act.set(q('exported'), 'true')
-          act.set(q('theme'), '@android:style/Theme.DeviceDefault.NoActionBar')
+          act.set(q('theme'), '@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen')
+          act.set(q('screenOrientation'), 'sensorLandscape')
+          act.set(q('configChanges'), 'orientation|screenSize|keyboardHidden')
+          act.set(q('windowSoftInputMode'), 'adjustPan')
           f = ET.SubElement(act, 'intent-filter')
           ET.SubElement(f, 'action').set(q('name'), 'android.intent.action.MAIN')
           ET.SubElement(f, 'category').set(q('name'), 'android.intent.category.LAUNCHER')
@@ -118,14 +170,48 @@ jobs:
           for d in glob.glob('launcher_dec/smali*'):
               shutil.copytree(d, dest, dirs_exist_ok=True)
           print('launcher smali copied to', dest)
+
+          smalis = glob.glob('out/smali*/**/*.smali', recursive=True)
+          loads_samp = False
+          for fn in smalis:
+              if fn.startswith(dest):
+                  continue
+              if re.search(r'const-string \w+, "samp"', open(fn, encoding='utf-8').read()):
+                  loads_samp = True
+                  break
+          print('client already loads samp:', loads_samp)
+          if not loads_samp:
+              pat = re.compile(r'(const-string (\w+), "GTASA"\s*\n\s*invoke-static \{\2\}, Ljava/lang/System;->loadLibrary\(Ljava/lang/String;\)V)')
+              done = False
+              for fn in smalis:
+                  if fn.startswith(dest):
+                      continue
+                  s = open(fn, encoding='utf-8').read()
+                  m = pat.search(s)
+                  if not m:
+                      continue
+                  reg = m.group(2)
+                  add = '\n\n    const-string %s, "samp"\n    invoke-static {%s}, Ljava/lang/System;->loadLibrary(Ljava/lang/String;)V' % (reg, reg)
+                  open(fn, 'w', encoding='utf-8').write(s[:m.end()] + add + s[m.end():])
+                  print('added loadLibrary(samp) in', fn)
+                  done = True
+                  break
+              if not done:
+                  print('WARNING: could not add loadLibrary(samp)')
           EOF
+
+      - name: Fix SDK versions so new Android installs it
+        run: |
+          sed -i -E "s/(targetSdkVersion: )'?[0-9]+'?/\1'28'/; s/(minSdkVersion: )'?[0-9]+'?/\1'21'/" out/apktool.yml
+          grep -n "minSdkVersion\|targetSdkVersion" out/apktool.yml
 
       - name: Build and sign
         run: |
           java -jar apktool.jar b out -o unsigned.apk
           java -jar signer.jar -a unsigned.apk --allowResign -o signed
+          ls -l signed
 
       - uses: actions/upload-artifact@v4
         with:
-          name: client-with-launcher
+          name: flin-rp-apk
           path: signed/*.apk
