@@ -75,7 +75,7 @@ jobs:
           import os, struct, sys
           p = 'project-libsamp.so'
           b = open(p, 'rb').read(20)
-          if len(b) < 20 or b[:4] != b'\\x7fELF' or b[4] != 1 or b[5] != 1:
+          if len(b) < 20 or b[:4] != bytes([0x7f, 0x45, 0x4c, 0x46]) or b[4] != 1 or b[5] != 1:
               sys.exit('FLIN libsamp.so is not a 32-bit little-endian ELF')
           machine = struct.unpack_from('<H', b, 18)[0]
           if machine != 40:
@@ -128,7 +128,7 @@ jobs:
           A = 'http://schemas.android.com/apk/res/android'
           mpath = 'out/AndroidManifest.xml'
           raw = open(mpath, encoding='utf-8').read()
-          for pfx, uri in re.findall(r'xmlns:(\w+)="([^"]+)"', raw):
+          for pfx, uri in re.findall(r'xmlns:(\\w+)="([^"]+)"', raw):
               ET.register_namespace(pfx, uri)
           ET.register_namespace('android', A)
 
@@ -193,12 +193,12 @@ jobs:
           for fn in smalis:
               if fn.startswith(dest):
                   continue
-              if re.search(r'const-string \w+, "samp"', open(fn, encoding='utf-8').read()):
+              if re.search(r'const-string \\w+, "samp"', open(fn, encoding='utf-8').read()):
                   loads_samp = True
                   break
           print('client already loads samp:', loads_samp)
           if not loads_samp:
-              pat = re.compile(r'(const-string (\w+), "GTASA"\s*\n\s*invoke-static \{\2\}, Ljava/lang/System;->loadLibrary\(Ljava/lang/String;\)V)')
+              pat = re.compile(r'(const-string (\\w+), "GTASA"\\s*\\n\\s*invoke-static \\{\\2\\}, Ljava/lang/System;->loadLibrary\\(Ljava/lang/String;\\)V)')
               done = False
               for fn in smalis:
                   if fn.startswith(dest):
@@ -208,7 +208,7 @@ jobs:
                   if not m:
                       continue
                   reg = m.group(2)
-                  add = '\n\n    const-string %s, "samp"\n    invoke-static {%s}, Ljava/lang/System;->loadLibrary(Ljava/lang/String;)V' % (reg, reg)
+                  add = '\\n\\n    const-string %s, "samp"\\n    invoke-static {%s}, Ljava/lang/System;->loadLibrary(Ljava/lang/String;)V' % (reg, reg)
                   open(fn, 'w', encoding='utf-8').write(s[:m.end()] + add + s[m.end():])
                   print('added loadLibrary(samp) in', fn)
                   done = True
@@ -219,7 +219,7 @@ jobs:
 
       - name: Fix SDK versions so new Android installs it
         run: |
-          sed -i -E "s/(targetSdkVersion: )'?[0-9]+'?/\1'28'/; s/(minSdkVersion: )'?[0-9]+'?/\1'21'/" out/apktool.yml
+          sed -i -E "s/(targetSdkVersion: )'?[0-9]+'?/\\1'28'/; s/(minSdkVersion: )'?[0-9]+'?/\\1'21'/" out/apktool.yml
           grep -n "minSdkVersion\|targetSdkVersion" out/apktool.yml
 
       - name: Build and sign
