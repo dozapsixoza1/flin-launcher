@@ -66,6 +66,23 @@ jobs:
             NDK_APPLICATION_MK=$PWD/libsamp_build/src/Application.mk
           ls -l libsamp_build/libs/armeabi-v7a/libsamp.so
 
+      - name: Use FLIN project's precompiled libsamp.so
+        run: |
+          curl -fL --retry 3 --retry-delay 2 \
+            https://raw.githubusercontent.com/dozapsixoza1/flinrp/main/libsamp.so \
+            -o project-libsamp.so
+          python3 - <<'PY'
+          import os, struct, sys
+          p = 'project-libsamp.so'
+          b = open(p, 'rb').read(20)
+          if len(b) < 20 or b[:4] != b'\\x7fELF' or b[4] != 1 or b[5] != 1:
+              sys.exit('FLIN libsamp.so is not a 32-bit little-endian ELF')
+          machine = struct.unpack_from('<H', b, 18)[0]
+          if machine != 40:
+              sys.exit(f'FLIN libsamp.so has wrong architecture: e_machine={machine}')
+          print('Using FLIN project libsamp.so:', os.path.getsize(p), 'bytes; ARMv7')
+          PY
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -103,7 +120,7 @@ jobs:
       - name: Embed launcher and new libsamp
         run: |
           mkdir -p out/lib/armeabi-v7a
-          cp libsamp_build/libs/armeabi-v7a/libsamp.so out/lib/armeabi-v7a/libsamp.so
+          cp project-libsamp.so out/lib/armeabi-v7a/libsamp.so
           python3 - << 'EOF'
           import glob, os, re, shutil, sys
           import xml.etree.ElementTree as ET
