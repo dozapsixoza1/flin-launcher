@@ -1,0 +1,49 @@
+name: Inspect client paths
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Download client and apktool
+        run: |
+          wget -nv https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar -O apktool.jar
+          wget -nv https://github.com/dozapsixoza1/silver-eureka-/releases/download/latest/flinrp_full.apk -O client.apk
+          ls -l client.apk
+
+      - name: Inspect
+        run: |
+          mkdir x
+          (cd x && unzip -q ../client.apk)
+          java -jar apktool.jar d -f client.apk -o out > decode.log 2>&1 || true
+          {
+          echo "=== lib sizes and md5 ==="
+          ls -l x/lib/*/
+          md5sum x/lib/*/*.so
+          echo "=== assets ==="
+          ls x/assets | head -50
+          for f in x/lib/armeabi-v7a/libGTASA.so x/lib/armeabi-v7a/libsamp.so; do
+            echo "=== paths in $f ==="
+            strings -n 6 "$f" | grep -E "/storage|/sdcard|Android/data|\.obb|texdb|files/|SAMP/|/Flin" | sort -u | head -60
+          done
+          echo "=== smali path logic ==="
+          grep -rn --include=*.smali -E "getExternalFilesDir|getExternalStorageDirectory|Android/data|/obb|\.obb|getObbDir" out/smali* | cut -c1-190 | head -80
+          echo "=== settings strings in libsamp ==="
+          strings -n 4 x/lib/armeabi-v7a/libsamp.so | grep -iE "settings|\.ini" | head
+          } > inspect.txt 2>&1
+          wc -c inspect.txt
+          head -n 100 inspect.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inspect
+          path: |
+            inspect.txt
+            decode.log
